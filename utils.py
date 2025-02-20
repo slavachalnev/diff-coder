@@ -4,10 +4,6 @@ from IPython import get_ipython
 from IPython.display import display, HTML
 
 ipython = get_ipython()
-# Code to automatically update the HookedTransformer code as its edited without restarting the kernel
-if ipython is not None:
-    ipython.magic("load_ext autoreload")
-    ipython.magic("autoreload 2")
 
 import plotly.io as pio
 pio.renderers.default = "jupyterlab"
@@ -167,20 +163,32 @@ def arg_parse_update_cfg(default_cfg):
     return cfg   
 
 
-def load_pile_lmsys_mixed_tokens():
-    try:
-        print("Loading data from disk")
-        all_tokens = torch.load("/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
-    except:
-        print("Data is not cached. Loading data from HF")
-        data = load_dataset(
-            "ckkissane/pile-lmsys-mix-1m-tokenized-gemma-2", 
-            split="train", 
-            cache_dir="/workspace/cache/"
-        )
-        data.save_to_disk("/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.hf")
-        data.set_format(type="torch", columns=["input_ids"])
-        all_tokens = data["input_ids"]
-        torch.save(all_tokens, "/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
-        print(f"Saved tokens to disk")
-    return all_tokens
+def load_pile_lmsys_mixed_tokens(proportion=1.0):
+    if proportion == 1.0:
+        try:
+            print("Loading full dataset from disk")
+            all_tokens = torch.load("/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
+            return all_tokens
+        except:
+            print("Full dataset not cached. Loading from HF")
+            data = load_dataset(
+                "ckkissane/pile-lmsys-mix-1m-tokenized-gemma-2", 
+                split="train", 
+                cache_dir="/workspace/cache/"
+            )
+            data.save_to_disk("/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.hf")
+            data.set_format(type="torch", columns=["input_ids"])
+            all_tokens = data["input_ids"]
+            torch.save(all_tokens, "/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
+            print("Saved full dataset to disk")
+            return all_tokens
+    
+    # For partial data, just load from HF without saving
+    print(f"Loading {proportion:.1%} of data from HF")
+    data = load_dataset(
+        "ckkissane/pile-lmsys-mix-1m-tokenized-gemma-2", 
+        split=f"train[:{proportion:.1%}]", 
+        cache_dir="/workspace/cache/"
+    )
+    data.set_format(type="torch", columns=["input_ids"])
+    return data["input_ids"]
