@@ -172,5 +172,5 @@ cython_debug/
 
 # Environment files
 .env
-.env.*
+# .env.*
 config.local.json
