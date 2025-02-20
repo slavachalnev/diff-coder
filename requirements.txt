@@ -1,7 +1,9 @@
 torch
-einops
-wandb
-ipython
-transformer_lens
+numpy
 plotly
-datasets 
+einops
+datasets
+transformer_lens
+ipython
+wandb 
+python-dotenv

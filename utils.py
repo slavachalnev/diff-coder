@@ -28,6 +28,8 @@ import colorsys
 
 import plotly.graph_objects as go
 
+from config import get_data_dir, get_cache_dir
+
 update_layout_set = {
     "xaxis_range", "yaxis_range", "hovermode", "xaxis_title", "yaxis_title", "colorbar", "colorscale", "coloraxis",
      "title_x", "bargap", "bargroupgap", "xaxis_tickformat", "yaxis_tickformat", "title_y", "legend_title_text", "xaxis_showgrid",
@@ -164,22 +166,27 @@ def arg_parse_update_cfg(default_cfg):
 
 
 def load_pile_lmsys_mixed_tokens(proportion=1.0):
+    data_dir = get_data_dir()
+    cache_dir = get_cache_dir()
+    cache_file = data_dir / "pile-lmsys-mix-1m-tokenized-gemma-2.pt"
+    hf_cache = data_dir / "pile-lmsys-mix-1m-tokenized-gemma-2.hf"
+
     if proportion == 1.0:
         try:
             print("Loading full dataset from disk")
-            all_tokens = torch.load("/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
+            all_tokens = torch.load(cache_file)
             return all_tokens
         except:
             print("Full dataset not cached. Loading from HF")
             data = load_dataset(
                 "ckkissane/pile-lmsys-mix-1m-tokenized-gemma-2", 
                 split="train", 
-                cache_dir="/workspace/cache/"
+                cache_dir=cache_dir
             )
-            data.save_to_disk("/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.hf")
+            data.save_to_disk(hf_cache)
             data.set_format(type="torch", columns=["input_ids"])
             all_tokens = data["input_ids"]
-            torch.save(all_tokens, "/workspace/data/pile-lmsys-mix-1m-tokenized-gemma-2.pt")
+            torch.save(all_tokens, cache_file)
             print("Saved full dataset to disk")
             return all_tokens
     
@@ -188,7 +195,7 @@ def load_pile_lmsys_mixed_tokens(proportion=1.0):
     data = load_dataset(
         "ckkissane/pile-lmsys-mix-1m-tokenized-gemma-2", 
         split=f"train[:{proportion:.1%}]", 
-        cache_dir="/workspace/cache/"
+        cache_dir=cache_dir
     )
     data.set_format(type="torch", columns=["input_ids"])
     return data["input_ids"]
