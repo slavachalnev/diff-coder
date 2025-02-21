@@ -25,6 +25,7 @@ chat_model = HookedTransformer.from_pretrained(
 # %%
 all_tokens = load_pile_lmsys_mixed_tokens()
 
+
 # %%
 default_cfg = {
     "seed": 49,
@@ -35,7 +36,7 @@ default_cfg = {
     "l1_coeff": 2,
     "beta1": 0.9,
     "beta2": 0.999,
-    "d_in": base_model.cfg.d_model,
+    "d_in": 2304,
     # "dict_size": 2**14,
     "dict_size": 512,
     "seq_len": 1024,
@@ -57,5 +58,6 @@ default_cfg = {
 cfg = arg_parse_update_cfg(default_cfg)
 
 trainer = Trainer(cfg, base_model, chat_model, all_tokens)
+# trainer = Trainer(cfg)
 trainer.train()
 # %%

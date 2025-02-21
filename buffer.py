@@ -15,80 +15,113 @@ class Buffer:
     It can either generate activations on the fly or load them from a cache.
     """
 
-    def __init__(self, cfg, model_A, model_B, all_tokens):
+    def __init__(self, cfg, model_A=None, model_B=None, all_tokens=None):
+        self.cfg = cfg
+        self.use_cache = cfg.get("use_cache", False)
+        self.cache_dir = Path(cfg["cache_dir"])
+        self.cache_file = self.cache_dir / "activations_cache.pt"
+        self.normalize = True
+        
+        # If using cache and it exists, we only need minimal initialization
+        if self.use_cache and self._cache_exists():
+            print(f"Loading cache from {self.cache_file}")
+            self._load_cache()
+            self.buffer_pointer = 0
+            return
+            
+        # For new cache generation or non-cache usage, we need models and tokens
+        if model_A is None or model_B is None or all_tokens is None:
+            raise ValueError("model_A, model_B, and all_tokens are required when cache doesn't exist or cache is not used")
+            
         assert model_A.cfg.d_model == model_B.cfg.d_model
-        self.cfg = cfg
-        self.buffer_size = cfg["batch_size"] * cfg["buffer_mult"]
-        self.buffer_batches = self.buffer_size // (cfg["seq_len"] - 1)
-        self.buffer_size = self.buffer_batches * (cfg["seq_len"] - 1)
-        self.buffer = torch.zeros(
-            (self.buffer_size, 2, model_A.cfg.d_model),
-            dtype=torch.bfloat16,
-            requires_grad=False,
-        )#.to(cfg["device"]) # hardcoding 2 for model diffing
-        self.cfg = cfg
         self.model_A = model_A
         self.model_B = model_B
-        self.token_pointer = 0
-        self.first = True
-        self.normalize = True
         self.all_tokens = all_tokens
+        self.model_batch_size = cfg["model_batch_size"]
+        self.seq_len = cfg["seq_len"]
         
-        # Cache related attributes
-        self.cache_dir = Path(cfg["cache_dir"])
-        self.use_cache = cfg.get("use_cache", False)
-        self.cache_size = cfg.get("cache_size_gb", 40) * (1024**3) # Convert GB to bytes
-        self.chunk_size = min(self.buffer_size * 10, self.cache_size // (2 * model_A.cfg.d_model * 2)) # Size that fits in memory
-        self.current_chunk = 0
-        self.total_chunks = self.cache_size // (self.chunk_size * 2 * model_A.cfg.d_model * 2) # 2 for both models, 2 for bfloat16
+        # Calculate max number of samples that fit in cache
+        self.cache_size = 40 * (1024**3)  # Convert GB to bytes
+        bytes_per_expanded_sample = 2 * model_A.cfg.d_model * 2  # 2 models, 2 for bfloat16
+        samples_per_batch = self.model_batch_size * (self.seq_len - 1)  # Each batch expands to this many samples
+        total_samples = int(self.cache_size / bytes_per_expanded_sample)
+        self.max_samples = total_samples - (total_samples % samples_per_batch)  # Round down to nearest batch multiple
         
+        print(f"Initializing buffer with {self.max_samples} samples")
+        self.buffer = torch.zeros(
+            (self.max_samples, 2, model_A.cfg.d_model),
+            dtype=torch.bfloat16,
+            requires_grad=False,
+        )
+        
+        self.token_pointer = 0
+        self.buffer_pointer = 0
+        
+        # Compute normalization factors
         estimated_norm_scaling_factor_A = self.estimate_norm_scaling_factor(cfg["model_batch_size"], model_A)
         estimated_norm_scaling_factor_B = self.estimate_norm_scaling_factor(cfg["model_batch_size"], model_B)
         
         self.normalisation_factor = torch.tensor(
             [estimated_norm_scaling_factor_A, estimated_norm_scaling_factor_B],
-            device="cuda:0",
             dtype=torch.float32,
         )
 
         if self.use_cache:
-            if not self._cache_exists():
-                print(f"Cache not found at {self.cache_dir}. Generating cache...")
-                self._generate_cache()
-            else:
-                print(f"Loading from cache at {self.cache_dir}")
-                self._load_cache_metadata()
+            print(f"Cache not found at {self.cache_file}. Generating cache...")
+            self._generate_cache()
         else:
             self.refresh()
 
     def _cache_exists(self):
-        """Check if cache exists and is complete"""
-        if not self.cache_dir.exists():
-            return False
-        metadata_path = self.cache_dir / "metadata.pt"
-        if not metadata_path.exists():
-            return False
-        # Check if all expected chunk files exist
-        for i in range(self.total_chunks):
-            if not (self.cache_dir / f"chunk_{i}.pt").exists():
-                return False
-        return True
+        """Check if cache file exists"""
+        return self.cache_file.exists()
 
-    def _save_cache_metadata(self):
-        """Save normalization factors and other metadata"""
-        metadata = {
-            "total_chunks": self.total_chunks,
-            "chunk_size": self.chunk_size,
-            "d_model": self.model_A.cfg.d_model,
-        }
-        torch.save(metadata, self.cache_dir / "metadata.pt")
-
-    def _load_cache_metadata(self):
-        """Load normalization factors and other metadata"""
-        metadata = torch.load(self.cache_dir / "metadata.pt")
-        self.total_chunks = metadata["total_chunks"]
-        self.chunk_size = metadata["chunk_size"]
-        assert self.model_A.cfg.d_model == metadata["d_model"], "Model dimension mismatch with cache"
+    def _load_cache(self):
+        """Load the entire cache into buffer"""
+        self.buffer = torch.load(self.cache_file)  # Keep on CPU
+        
+    @torch.no_grad()
+    def _generate_cache(self):
+        """Generate activation cache and save to single file"""
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Move models to device
+        self.model_A.to(self.cfg["device"])
+        self.model_B.to(self.cfg["device"])
+        
+        buffer_pointer = 0
+        samples_per_batch = self.model_batch_size * (self.seq_len - 1)
+        num_full_batches = self.max_samples // samples_per_batch
+        
+        with torch.autocast("cuda", torch.bfloat16):
+            for _ in tqdm.trange(num_full_batches):
+                if self.token_pointer >= len(self.all_tokens):
+                    break
+                        
+                tokens = self.all_tokens[
+                    self.token_pointer : self.token_pointer + self.model_batch_size
+                ]
+                    
+                acts = self._get_batch_activations(tokens)
+                
+                # Store in buffer
+                next_pointer = buffer_pointer + acts.shape[0]
+                self.buffer[buffer_pointer:next_pointer] = acts
+                buffer_pointer = next_pointer
+                self.token_pointer += self.model_batch_size
+        
+        # Trim buffer to actual size and save
+        if buffer_pointer < self.max_samples:
+            self.buffer = self.buffer[:buffer_pointer]
+        
+        torch.save(self.buffer, self.cache_file)  # Buffer is already on CPU
+        
+        # Move models back to CPU
+        self.model_A.cpu()
+        self.model_B.cpu()
+        torch.cuda.empty_cache()
+        
+        print(f"Generated cache with {buffer_pointer} samples, total size: {(buffer_pointer * 2 * self.model_A.cfg.d_model * 2) / (1024**3):.2f} GB")
 
     def _get_batch_activations(self, tokens):
         """Get activations for a batch of tokens from both models.
@@ -115,79 +148,12 @@ class Buffer:
             acts,
             "n_layers batch seq_len d_model -> (batch seq_len) n_layers d_model",
         )
+
+        # Apply normalization if enabled
+        if self.normalize:
+            acts = acts * self.normalisation_factor[None, :, None]
         
         return acts
-
-    @torch.no_grad()
-    def _generate_cache(self):
-        """Generate and save activation cache to disk"""
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        chunk_buffer = torch.zeros(
-            (self.chunk_size, 2, self.model_A.cfg.d_model),
-            dtype=torch.bfloat16
-        )
-        
-        total_processed = 0
-        chunk_idx = 0
-        
-        print(f"Generating cache with {self.total_chunks} chunks of size {self.chunk_size}")
-        
-        # Move models to device at start
-        self.model_A.to(self.cfg["device"])
-        self.model_B.to(self.cfg["device"])
-        
-        with torch.autocast("cuda", torch.bfloat16):
-            while total_processed < self.cache_size and chunk_idx < self.total_chunks:
-                chunk_pointer = 0
-                
-                # Fill current chunk
-                for _ in tqdm.trange(0, self.chunk_size, self.cfg["model_batch_size"]):
-                    if self.token_pointer >= len(self.all_tokens):
-                        break
-                            
-                    tokens = self.all_tokens[
-                        self.token_pointer : min(
-                            self.token_pointer + self.cfg["model_batch_size"],
-                            len(self.all_tokens)
-                        )
-                    ]
-                        
-                    acts = self._get_batch_activations(tokens)
-                        
-                    # Store in chunk buffer
-                    chunk_buffer[chunk_pointer:chunk_pointer + acts.shape[0]] = acts
-                    chunk_pointer += acts.shape[0]
-                    self.token_pointer += self.cfg["model_batch_size"]
-                        
-                    if chunk_pointer >= self.chunk_size:
-                        break
-                
-                # Save filled chunk
-                if chunk_pointer > 0:  # Only save if we actually filled something
-                    torch.save(
-                        chunk_buffer[:chunk_pointer], 
-                        self.cache_dir / f"chunk_{chunk_idx}.pt"
-                    )
-                    total_processed += chunk_pointer * 2 * self.model_A.cfg.d_model * 2
-                    chunk_idx += 1
-                    
-                if self.token_pointer >= len(self.all_tokens):
-                    break
-        
-        # Move models back to CPU at end
-        self.model_A.cpu()
-        self.model_B.cpu()
-        torch.cuda.empty_cache()
-        
-        self._save_cache_metadata()
-        print(f"Generated {chunk_idx} chunks, total size: {total_processed / (1024**3):.2f} GB")
-
-    def _load_next_chunk(self):
-        """Load next chunk from cache"""
-        chunk = torch.load(self.cache_dir / f"chunk_{self.current_chunk}.pt")
-        self.current_chunk = (self.current_chunk + 1) % self.total_chunks
-        return chunk
 
     @torch.no_grad()
     def estimate_norm_scaling_factor(self, batch_size, model, n_batches_for_norm_estimate: int = 100):
@@ -263,13 +229,23 @@ class Buffer:
 
     @torch.no_grad()
     def next(self):
-        out = self.buffer[self.pointer : self.pointer + self.cfg["batch_size"]].float()
-        self.pointer += self.cfg["batch_size"]
-        
-        # Refresh when buffer is half empty
-        if self.pointer > self.buffer.shape[0] // 2 - self.cfg["batch_size"]:
-            self.refresh()
+        if self.use_cache:
+            # Get batch from CPU buffer and move to GPU
+            out = self.buffer[self.buffer_pointer:self.buffer_pointer + self.cfg["batch_size"]].to(self.cfg["device"]).float()
+            self.buffer_pointer += self.cfg["batch_size"]
             
-        if self.normalize:
-            out = out * self.normalisation_factor[None, :, None]
+            # If we've reached the end, reshuffle the entire buffer on CPU
+            if self.buffer_pointer + self.cfg["batch_size"] > len(self.buffer):
+                self.buffer = self.buffer[torch.randperm(len(self.buffer))]
+                self.buffer_pointer = 0
+                out = self.buffer[self.buffer_pointer:self.buffer_pointer + self.cfg["batch_size"]].to(self.cfg["device"]).float()
+                self.buffer_pointer += self.cfg["batch_size"]
+        else:
+            out = self.buffer[self.pointer:self.pointer + self.cfg["batch_size"]].to(self.cfg["device"]).float()
+            self.pointer += self.cfg["batch_size"]
+            
+            # Refresh when buffer is half empty
+            if self.pointer > self.buffer.shape[0] // 2 - self.cfg["batch_size"]:
+                self.refresh()
+            
         return out

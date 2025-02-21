@@ -6,7 +6,7 @@ from torch.nn.utils import clip_grad_norm_
 import wandb
 
 class Trainer:
-    def __init__(self, cfg, model_A, model_B, all_tokens):
+    def __init__(self, cfg, model_A=None, model_B=None, all_tokens=None):
         self.cfg = cfg
         self.model_A = model_A
         self.model_B = model_B
