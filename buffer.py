@@ -25,7 +25,7 @@ class Buffer:
             (self.buffer_size, 2, model_A.cfg.d_model),
             dtype=torch.bfloat16,
             requires_grad=False,
-        ).to(cfg["device"]) # hardcoding 2 for model diffing
+        )#.to(cfg["device"]) # hardcoding 2 for model diffing
         self.cfg = cfg
         self.model_A = model_A
         self.model_B = model_B
@@ -42,14 +42,6 @@ class Buffer:
         self.current_chunk = 0
         self.total_chunks = self.cache_size // (self.chunk_size * 2 * model_A.cfg.d_model * 2) # 2 for both models, 2 for bfloat16
         
-        if self.use_cache:
-            if not self._cache_exists():
-                print(f"Cache not found at {self.cache_dir}. Generating cache...")
-                self._generate_cache()
-            else:
-                print(f"Loading from cache at {self.cache_dir}")
-                self._load_cache_metadata()
-        
         estimated_norm_scaling_factor_A = self.estimate_norm_scaling_factor(cfg["model_batch_size"], model_A)
         estimated_norm_scaling_factor_B = self.estimate_norm_scaling_factor(cfg["model_batch_size"], model_B)
         
@@ -58,8 +50,15 @@ class Buffer:
             device="cuda:0",
             dtype=torch.float32,
         )
-        
-        if not self.use_cache:
+
+        if self.use_cache:
+            if not self._cache_exists():
+                print(f"Cache not found at {self.cache_dir}. Generating cache...")
+                self._generate_cache()
+            else:
+                print(f"Loading from cache at {self.cache_dir}")
+                self._load_cache_metadata()
+        else:
             self.refresh()
 
     def _cache_exists(self):
@@ -78,7 +77,6 @@ class Buffer:
     def _save_cache_metadata(self):
         """Save normalization factors and other metadata"""
         metadata = {
-            "normalisation_factor": self.normalisation_factor,
             "total_chunks": self.total_chunks,
             "chunk_size": self.chunk_size,
             "d_model": self.model_A.cfg.d_model,
@@ -88,10 +86,37 @@ class Buffer:
     def _load_cache_metadata(self):
         """Load normalization factors and other metadata"""
         metadata = torch.load(self.cache_dir / "metadata.pt")
-        self.normalisation_factor = metadata["normalisation_factor"]
         self.total_chunks = metadata["total_chunks"]
         self.chunk_size = metadata["chunk_size"]
         assert self.model_A.cfg.d_model == metadata["d_model"], "Model dimension mismatch with cache"
+
+    def _get_batch_activations(self, tokens):
+        """Get activations for a batch of tokens from both models.
+        Handles device management and memory cleanup consistently."""
+        # Process model A and move activation to CPU
+        _, cache_A = self.model_A.run_with_cache(
+                tokens, names_filter=self.cfg["hook_point"]
+            )
+        acts_A = cache_A[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
+        del cache_A  # Clear cache to free GPU memory
+        
+        # Process model B and move activation to CPU
+        _, cache_B = self.model_B.run_with_cache(
+            tokens, names_filter=self.cfg["hook_point"]
+        )
+        acts_B = cache_B[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
+        del cache_B  # Clear cache to free GPU memory
+        
+        # Stack and reshape on CPU
+        acts = torch.stack([acts_A, acts_B], dim=0)
+        del acts_A, acts_B
+        
+        acts = einops.rearrange(
+            acts,
+            "n_layers batch seq_len d_model -> (batch seq_len) n_layers d_model",
+        )
+        
+        return acts
 
     @torch.no_grad()
     def _generate_cache(self):
@@ -120,44 +145,21 @@ class Buffer:
                 for _ in tqdm.trange(0, self.chunk_size, self.cfg["model_batch_size"]):
                     if self.token_pointer >= len(self.all_tokens):
                         break
-                        
+                            
                     tokens = self.all_tokens[
                         self.token_pointer : min(
                             self.token_pointer + self.cfg["model_batch_size"],
                             len(self.all_tokens)
                         )
                     ]
-                    
-                    # Process model A and move activation to CPU
-                    _, cache_A = self.model_A.run_with_cache(
-                        tokens, names_filter=self.cfg["hook_point"]
-                    )
-                    acts_A = cache_A[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
-                    del cache_A  # Clear cache to free GPU memory
-                    torch.cuda.empty_cache()
-
-                    # Process model B and move activation to CPU
-                    _, cache_B = self.model_B.run_with_cache(
-                        tokens, names_filter=self.cfg["hook_point"]
-                    )
-                    acts_B = cache_B[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
-                    del cache_B  # Clear cache to free GPU memory
-                    torch.cuda.empty_cache()
-                    
-                    # Stack and reshape on CPU
-                    acts = torch.stack([acts_A, acts_B], dim=0)
-                    del acts_A, acts_B
-                    
-                    acts = einops.rearrange(
-                        acts,
-                        "n_layers batch seq_len d_model -> (batch seq_len) n_layers d_model",
-                    )
-                    
+                        
+                    acts = self._get_batch_activations(tokens)
+                        
                     # Store in chunk buffer
                     chunk_buffer[chunk_pointer:chunk_pointer + acts.shape[0]] = acts
                     chunk_pointer += acts.shape[0]
                     self.token_pointer += self.cfg["model_batch_size"]
-                    
+                        
                     if chunk_pointer >= self.chunk_size:
                         break
                 
@@ -240,30 +242,9 @@ class Buffer:
                             self.token_pointer + self.cfg["model_batch_size"], num_batches
                         )
                     ]
-                    # Process model A and move activation to CPU
-                    _, cache_A = self.model_A.run_with_cache(
-                        tokens, names_filter=self.cfg["hook_point"]
-                    )
-                    acts_A = cache_A[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
-                    del cache_A  # Clear cache to free GPU memory
-
-                    # Process model B and move activation to CPU
-                    _, cache_B = self.model_B.run_with_cache(
-                        tokens, names_filter=self.cfg["hook_point"]
-                    )
-                    acts_B = cache_B[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
-                    del cache_B  # Clear cache to free GPU memory
                     
-                    # Stack and reshape on CPU
-                    acts = torch.stack([acts_A, acts_B], dim=0)
-                    del acts_A, acts_B
+                    acts = self._get_batch_activations(tokens)
                     
-                    assert acts.shape == (2, tokens.shape[0], tokens.shape[1]-1, self.model_A.cfg.d_model)
-                    acts = einops.rearrange(
-                        acts,
-                        "n_layers batch seq_len d_model -> (batch seq_len) n_layers d_model",
-                    )
-
                     self.buffer[self.pointer : self.pointer + acts.shape[0]] = acts
                     self.pointer += acts.shape[0]
                     self.token_pointer += self.cfg["model_batch_size"]
