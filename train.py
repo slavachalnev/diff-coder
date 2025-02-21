@@ -1,18 +1,23 @@
 # %%
 from trainer import Trainer
-from transformers import HookedTransformer
+from transformer_lens import HookedTransformer
 from utils import load_pile_lmsys_mixed_tokens, arg_parse_update_cfg
+import torch
 # %%
 device = 'cuda:0'
 
 base_model = HookedTransformer.from_pretrained(
     "gemma-2-2b", 
-    device=device, 
+    device=device,
+    # dtype=torch.bfloat16,
+    dtype=torch.float16,
 )
 
 chat_model = HookedTransformer.from_pretrained(
     "gemma-2-2b-it", 
-    device=device, 
+    device=device,
+    # dtype=torch.bfloat16,
+    dtype=torch.float16,
 )
 
 # %%
@@ -35,7 +40,7 @@ default_cfg = {
     "model_name": "gemma-2-2b",
     "site": "resid_pre",
     "device": "cuda:0",
-    "model_batch_size": 4,
+    "model_batch_size": 2,
     "log_every": 100,
     "save_every": 30000,
     "dec_init_norm": 0.08,

@@ -69,6 +69,11 @@ class Buffer:
     def refresh(self):
         self.pointer = 0
         print("Refreshing the buffer!")
+        # Move buffer and models to appropriate devices
+        self.buffer = self.buffer.cpu()
+        self.model_A.to(self.cfg["device"])
+        self.model_B.to(self.cfg["device"])
+        
         with torch.autocast("cuda", torch.bfloat16):
             if self.first:
                 num_batches = self.buffer_batches
@@ -81,19 +86,25 @@ class Buffer:
                         self.token_pointer + self.cfg["model_batch_size"], num_batches
                     )
                 ]
+                # Process model A and move activation to CPU
                 _, cache_A = self.model_A.run_with_cache(
                     tokens, names_filter=self.cfg["hook_point"]
                 )
-                cache_A: ActivationCache
+                acts_A = cache_A[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
+                del cache_A  # Clear cache to free GPU memory
 
+                # Process model B and move activation to CPU
                 _, cache_B = self.model_B.run_with_cache(
                     tokens, names_filter=self.cfg["hook_point"]
                 )
-                cache_B: ActivationCache
-
-                acts = torch.stack([cache_A[self.cfg["hook_point"]], cache_B[self.cfg["hook_point"]]], dim=0)
-                acts = acts[:, :, 1:, :] # Drop BOS
-                assert acts.shape == (2, tokens.shape[0], tokens.shape[1]-1, self.model_A.cfg.d_model) # [2, batch, seq_len, d_model]
+                acts_B = cache_B[self.cfg["hook_point"]][:, 1:, :].cpu()  # Drop BOS and move to CPU
+                del cache_B  # Clear cache to free GPU memory
+                
+                # Stack and reshape on CPU
+                acts = torch.stack([acts_A, acts_B], dim=0)
+                del acts_A, acts_B
+                
+                assert acts.shape == (2, tokens.shape[0], tokens.shape[1]-1, self.model_A.cfg.d_model)
                 acts = einops.rearrange(
                     acts,
                     "n_layers batch seq_len d_model -> (batch seq_len) n_layers d_model",
@@ -104,9 +115,16 @@ class Buffer:
                 self.token_pointer += self.cfg["model_batch_size"]
 
         self.pointer = 0
-        self.buffer = self.buffer[
-            torch.randperm(self.buffer.shape[0]).to(self.cfg["device"])
-        ]
+        # Shuffle on CPU
+        self.buffer = self.buffer[torch.randperm(self.buffer.shape[0])]
+        
+        # Move models back to CPU
+        self.model_A.cpu()
+        self.model_B.cpu()
+        torch.cuda.empty_cache()  # Clear any remaining GPU memory
+        
+        # Finally move buffer back to GPU
+        self.buffer = self.buffer.to(self.cfg["device"])
 
     @torch.no_grad()
     def next(self):
