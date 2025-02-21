@@ -3,6 +3,8 @@ from trainer import Trainer
 from transformer_lens import HookedTransformer
 from utils import load_pile_lmsys_mixed_tokens, arg_parse_update_cfg
 import torch
+from pathlib import Path
+from config import get_activations_cache_dir
 # %%
 device = 'cuda:0'
 
@@ -34,7 +36,8 @@ default_cfg = {
     "beta1": 0.9,
     "beta2": 0.999,
     "d_in": base_model.cfg.d_model,
-    "dict_size": 2**14,
+    # "dict_size": 2**14,
+    "dict_size": 512,
     "seq_len": 1024,
     "enc_dtype": "fp32",
     "model_name": "gemma-2-2b",
@@ -46,6 +49,10 @@ default_cfg = {
     "dec_init_norm": 0.08,
     "hook_point": "blocks.14.hook_resid_pre",
     "wandb_project": "gemma-diff-coder",
+    # Cache settings
+    "use_cache": True,
+    "cache_size_gb": 40,
+    "cache_dir": str(get_activations_cache_dir()),
 }
 cfg = arg_parse_update_cfg(default_cfg)
 

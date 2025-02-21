@@ -21,4 +21,13 @@ def get_cache_dir() -> Path:
         raise ValueError("CACHE_DIR environment variable must be set")
     cache_dir = Path(cache_dir_str)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+def get_activations_cache_dir() -> Path:
+    """Get the configured activations cache directory, failing if not set"""
+    cache_dir_str = os.getenv('ACTIVATIONS_CACHE_DIR')
+    if not cache_dir_str:
+        raise ValueError("ACTIVATIONS_CACHE_DIR environment variable must be set")
+    cache_dir = Path(cache_dir_str)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir 
