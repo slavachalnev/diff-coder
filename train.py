@@ -55,12 +55,12 @@ diffcoder_cfgs = [
     {
         "dict_size": 1024,
         "lr_enc_dec1": 5e-5,
-        "lr_dec2": 2e-5,
+        "lr_dec2": 5e-5,
         "l1_coeff": 0.001,
         "beta1": 0.9,
         "beta2": 0.999,
         "dec_init_norm": 0.08,
-        "dec2_steps": 1,  # Standard single step
+        "alpha": 0.5,  # Trade-off between mse1 and mse2
     },
     {
         "dict_size": 1024,
@@ -70,17 +70,17 @@ diffcoder_cfgs = [
         "beta1": 0.9,
         "beta2": 0.999,
         "dec_init_norm": 0.08,
-        "dec2_steps": 3,  # Three decoder2 steps per encoder step
+        "alpha": 1.0,  # Higher weight on mse2 difference
     },
     {
         "dict_size": 1024,
         "lr_enc_dec1": 5e-5,
-        "lr_dec2": 2e-5,      
+        "lr_dec2": 5e-5,      
         "l1_coeff": 0.001,
         "beta1": 0.9,
         "beta2": 0.999,
         "dec_init_norm": 0.08,
-        "dec2_steps": 5,  # Five decoder2 steps per encoder step
+        "alpha": 0.1,  # Lower weight on mse2 difference
     },
 ]
 
