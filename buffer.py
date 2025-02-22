@@ -228,15 +228,42 @@ class Buffer:
         self.buffer = self.buffer.to(self.cfg["device"])
 
     @torch.no_grad()
+    def _shuffle_buffer_in_chunks(self):
+        # Perform shuffling in chunks to reduce memory usage
+        chunk_size = min(100000, len(self.buffer))  # Use 100k samples or less if buffer is smaller
+        num_chunks = (len(self.buffer) + chunk_size - 1) // chunk_size
+        
+        # Create a shuffled index list in chunks
+        shuffled_indices = []
+        for i in range(num_chunks):
+            start_idx = i * chunk_size
+            end_idx = min(start_idx + chunk_size, len(self.buffer))
+            chunk_indices = torch.randperm(end_idx - start_idx) + start_idx
+            shuffled_indices.append(chunk_indices)
+        
+        # Combine and shuffle the chunks themselves
+        shuffled_indices = torch.cat(shuffled_indices)
+        chunk_permutation = torch.randperm(num_chunks)
+        final_indices = torch.cat([shuffled_indices[i*chunk_size:(i+1)*chunk_size] 
+                                for i in chunk_permutation])
+        
+        # Apply the shuffling in chunks
+        for i in range(0, len(self.buffer), chunk_size):
+            end_idx = min(i + chunk_size, len(self.buffer))
+            temp = self.buffer[final_indices[i:end_idx]].clone()
+            self.buffer[i:end_idx] = temp
+            del temp
+
+    @torch.no_grad()
     def next(self):
         if self.use_cache:
             # Get batch from CPU buffer and move to GPU
             out = self.buffer[self.buffer_pointer:self.buffer_pointer + self.cfg["batch_size"]].to(self.cfg["device"]).float()
             self.buffer_pointer += self.cfg["batch_size"]
             
-            # If we've reached the end, reshuffle the entire buffer on CPU
+            # If we've reached the end, perform batched shuffling
             if self.buffer_pointer + self.cfg["batch_size"] > len(self.buffer):
-                self.buffer = self.buffer[torch.randperm(len(self.buffer))]
+                self._shuffle_buffer_in_chunks()
                 self.buffer_pointer = 0
                 out = self.buffer[self.buffer_pointer:self.buffer_pointer + self.cfg["batch_size"]].to(self.cfg["device"]).float()
                 self.buffer_pointer += self.cfg["batch_size"]

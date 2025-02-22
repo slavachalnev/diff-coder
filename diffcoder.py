@@ -8,9 +8,10 @@ from typing import Optional, Union
 from huggingface_hub import hf_hub_download
 from pathlib import Path
 from typing import NamedTuple
+from config import get_data_dir
 
 DTYPES = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}
-SAVE_DIR = Path("/workspace/crosscoder-model-diff-replication/checkpoints")
+SAVE_DIR = get_data_dir() / "checkpoints"
 
 class LossOutput(NamedTuple):
     mse1: torch.Tensor  # MSE for target 1 (want to minimize)
@@ -140,7 +141,10 @@ class DiffCoder(nn.Module):
         )
 
     def create_save_dir(self):
-        base_dir = Path("/workspace/crosscoder-model-diff-replication/checkpoints")
+        # Ensure base checkpoints directory exists
+        SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Find next available version number
         version_list = [
             int(file.name.split("_")[1])
             for file in list(SAVE_DIR.iterdir())
@@ -150,7 +154,7 @@ class DiffCoder(nn.Module):
             version = 1 + max(version_list)
         else:
             version = 0
-        self.save_dir = base_dir / f"version_{version}"
+        self.save_dir = SAVE_DIR / f"version_{version}"
         self.save_dir.mkdir(parents=True)
 
     def save(self):
@@ -168,7 +172,7 @@ class DiffCoder(nn.Module):
 
     @classmethod
     def load(cls, version_dir, checkpoint_version):
-        save_dir = Path("/workspace/crosscoder-model-diff-replication/checkpoints") / str(version_dir)
+        save_dir = SAVE_DIR / str(version_dir)
         cfg_path = save_dir / f"{str(checkpoint_version)}_cfg.json"
         weight_path = save_dir / f"{str(checkpoint_version)}.pt"
 

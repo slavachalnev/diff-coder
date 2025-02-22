@@ -8,37 +8,38 @@ from config import get_activations_cache_dir
 # %%
 device = 'cuda:0'
 
-base_model = HookedTransformer.from_pretrained(
-    "gemma-2-2b", 
-    device=device,
-    # dtype=torch.bfloat16,
-    dtype=torch.float16,
-)
+# base_model = HookedTransformer.from_pretrained(
+#     "gemma-2-2b", 
+#     device=device,
+#     # dtype=torch.bfloat16,
+#     dtype=torch.float16,
+# )
 
-chat_model = HookedTransformer.from_pretrained(
-    "gemma-2-2b-it", 
-    device=device,
-    # dtype=torch.bfloat16,
-    dtype=torch.float16,
-)
+# chat_model = HookedTransformer.from_pretrained(
+#     "gemma-2-2b-it", 
+#     device=device,
+#     # dtype=torch.bfloat16,
+#     dtype=torch.float16,
+# )
 
-# %%
-all_tokens = load_pile_lmsys_mixed_tokens()
+# # %%
+# all_tokens = load_pile_lmsys_mixed_tokens()
 
 
 # %%
 default_cfg = {
     "seed": 49,
-    "batch_size": 4096,
+    "batch_size": 8192,
     "buffer_mult": 128,
     "lr": 5e-5,
-    "num_tokens": 400_000_000,
-    "l1_coeff": 2,
+    # "num_tokens": 400_000_000,
+    "num_tokens": 40_000_000,
+    "l1_coeff": 0.01,
     "beta1": 0.9,
     "beta2": 0.999,
     "d_in": 2304,
     # "dict_size": 2**14,
-    "dict_size": 512,
+    "dict_size": 1024,
     "seq_len": 1024,
     "enc_dtype": "fp32",
     "model_name": "gemma-2-2b",
@@ -57,7 +58,7 @@ default_cfg = {
 }
 cfg = arg_parse_update_cfg(default_cfg)
 
-trainer = Trainer(cfg, base_model, chat_model, all_tokens)
-# trainer = Trainer(cfg)
+# trainer = Trainer(cfg, base_model, chat_model, all_tokens)
+trainer = Trainer(cfg)
 trainer.train()
 # %%
