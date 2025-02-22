@@ -75,6 +75,10 @@ class Trainer:
         self.total_steps = cfg["num_tokens"] // cfg["batch_size"]
         self.wandb_group = None  # For use with MultiTrainer
 
+        # Get learning rates - use lr_enc_dec1 and lr_dec2 if specified, otherwise use lr for backwards compatibility
+        lr_enc_dec1 = cfg.get("lr_enc_dec1", cfg["lr"])
+        lr_dec2 = cfg.get("lr_dec2", cfg["lr"])
+
         # Separate optimizers for encoder+decoder1 and decoder2
         self.optimizer_enc_dec1 = torch.optim.Adam(
             [
@@ -83,7 +87,7 @@ class Trainer:
                 {'params': self.diffcoder.W_dec1},
                 {'params': self.diffcoder.b_dec1}
             ],
-            lr=cfg["lr"],
+            lr=lr_enc_dec1,
             betas=(cfg["beta1"], cfg["beta2"]),
         )
         
@@ -92,7 +96,7 @@ class Trainer:
                 {'params': self.diffcoder.W_dec2},
                 {'params': self.diffcoder.b_dec2}
             ],
-            lr=cfg["lr"],
+            lr=lr_dec2,
             betas=(cfg["beta1"], cfg["beta2"]),
         )
 
@@ -137,28 +141,38 @@ class Trainer:
         )
         self.optimizer_enc_dec1.step()
         
-        # Second update: decoder2
-        self.optimizer_dec2.zero_grad()
-        loss_dec2 = losses.mse2
-        loss_dec2.backward()
-        clip_grad_norm_(
-            [self.diffcoder.W_dec2, self.diffcoder.b_dec2],
-            max_norm=1.0
-        )
-        self.optimizer_dec2.step()
+        # Get number of decoder2 steps from config (default to 1 for backwards compatibility)
+        dec2_steps = self.cfg.get("dec2_steps", 1)
+        
+        # Multiple updates for decoder2
+        final_loss_dec2 = 0
+        for _ in range(dec2_steps):
+            self.optimizer_dec2.zero_grad()
+            # Recompute losses since encoder weights changed
+            losses = self.diffcoder.get_losses(acts)
+            loss_dec2 = losses.mse2
+            loss_dec2.backward()
+            clip_grad_norm_(
+                [self.diffcoder.W_dec2, self.diffcoder.b_dec2],
+                max_norm=1.0
+            )
+            self.optimizer_dec2.step()
+            final_loss_dec2 = loss_dec2.item()  # Keep track of final loss
         
         # Update learning rates
         self.scheduler_enc_dec1.step()
         self.scheduler_dec2.step()
 
         loss_dict = {
-            "total_loss": loss_enc_dec1.item() + loss_dec2.item(),
+            "total_loss": loss_enc_dec1.item() + final_loss_dec2,
             "mse1": losses.mse1.item(),
             "mse2": losses.mse2.item(),
             "l1_loss": losses.l1_loss.item(),
             "l0_loss": losses.l0_loss.item(),
             "l1_coeff": self.get_l1_coeff(),
-            "lr": self.scheduler_enc_dec1.get_last_lr()[0],
+            "lr_enc_dec1": self.scheduler_enc_dec1.get_last_lr()[0],
+            "lr_dec2": self.scheduler_dec2.get_last_lr()[0],
+            "dec2_steps": dec2_steps,
         }
         self.step_counter += 1
         return loss_dict

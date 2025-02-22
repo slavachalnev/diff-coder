@@ -32,7 +32,7 @@ base_cfg = {
     "seed": 49,
     "batch_size": 8192,
     "buffer_mult": 128,
-    "num_tokens": 4_000_000,
+    "num_tokens": 400_000_000,
     "d_in": 2304,
     "seq_len": 1024,
     "enc_dtype": "fp32",
@@ -54,27 +54,33 @@ base_cfg = {
 diffcoder_cfgs = [
     {
         "dict_size": 1024,
-        "lr": 5e-5,
+        "lr_enc_dec1": 5e-5,
+        "lr_dec2": 2e-5,
         "l1_coeff": 0.001,
         "beta1": 0.9,
         "beta2": 0.999,
         "dec_init_norm": 0.08,
+        "dec2_steps": 1,  # Standard single step
     },
     {
         "dict_size": 1024,
-        "lr": 5e-5,
-        "l1_coeff": 0.005,
+        "lr_enc_dec1": 5e-5,
+        "lr_dec2": 5e-5,      
+        "l1_coeff": 0.001,
         "beta1": 0.9,
         "beta2": 0.999,
         "dec_init_norm": 0.08,
+        "dec2_steps": 3,  # Three decoder2 steps per encoder step
     },
     {
         "dict_size": 1024,
-        "lr": 5e-5,
-        "l1_coeff": 0.01,
+        "lr_enc_dec1": 5e-5,
+        "lr_dec2": 2e-5,      
+        "l1_coeff": 0.001,
         "beta1": 0.9,
         "beta2": 0.999,
         "dec_init_norm": 0.08,
+        "dec2_steps": 5,  # Five decoder2 steps per encoder step
     },
 ]
 
